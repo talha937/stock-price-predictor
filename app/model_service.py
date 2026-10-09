@@ -1,5 +1,6 @@
 import time
 
+import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 
 from src.data_cleaning import clean_stock_data
@@ -15,6 +16,56 @@ ALWAYS_UP_ACCURACY = 0.546
 
 CACHE_SECONDS = 60 * 60  # keep each ticker's result for 1 hour
 _cache = {}
+
+
+def _describe(name: str, v: float) -> str:
+    """Turn one feature value into a plain-English sentence."""
+    if name == "ret_1":
+        return f"Today's price change was {v * 100:+.2f}%."
+    if name.startswith("ret_lag_"):
+        days = int(name.split("_")[-1])
+        when = "yesterday" if days == 1 else f"{days} trading days ago"
+        return f"The price change {when} was {v * 100:+.2f}%."
+    if name.startswith("sma_"):
+        window = name.split("_")[1]
+        side = "above" if v >= 0 else "below"
+        return f"The price is {abs(v) * 100:.1f}% {side} its {window}-day average."
+    if name.startswith("vol_chg"):
+        return f"Trading volume changed {v * 100:+.0f}% since yesterday."
+    if name.startswith("vol_"):
+        return f"Over the last {name.split('_')[1]} days, daily price swings averaged {v * 100:.2f}%."
+    if name == "rsi_14":
+        if v > 70:
+            note = "often called overbought: the price rose fast"
+        elif v < 30:
+            note = "often called oversold: the price fell fast"
+        else:
+            note = "a neutral zone"
+        return f"The RSI (a speed-of-change gauge) is {v:.0f}, {note}."
+    if name == "macd":
+        trend = "stronger" if v >= 0 else "weaker"
+        return f"The short-term trend is {trend} than the longer-term trend."
+    return name
+
+
+def _reasons(model, x, medians, predicted: float, cols) -> list:
+    """Find the 3 inputs that pushed this guess the most.
+
+    For the 5 most important inputs, swap the value for a typical (median) day and
+    see how the guess changes. The change is how much that input pushed it up or down.
+    """
+    top = pd.Series(model.feature_importances_, index=cols).nlargest(5).index
+    found = []
+    for c in top:
+        alt = x.copy()
+        alt[c] = medians[c]
+        push = predicted - float(model.predict(alt)[0])
+        found.append((
+            abs(push),
+            {"text": _describe(c, float(x[c].iloc[0])), "effect": "up" if push > 0 else "down"},
+        ))
+    found.sort(key=lambda t: -t[0])
+    return [item for _, item in found[:3]]
 
 
 def get_prediction(ticker: str) -> dict:
@@ -40,8 +91,10 @@ def get_prediction(ticker: str) -> dict:
     )
     model.fit(train[cols], train["target_ret"])
 
-    predicted = float(model.predict(latest[cols].iloc[[-1]])[0])
+    x = latest[cols].iloc[[-1]]
+    predicted = float(model.predict(x)[0])
     baseline = float(train["target_ret"].mean())
+    reasons = _reasons(model, x, train[cols].median(), predicted, cols)
 
     history = df["Adj Close"].tail(90)
 
@@ -52,6 +105,7 @@ def get_prediction(ticker: str) -> dict:
         "predicted_return": predicted,
         "baseline_return": baseline,
         "lean": "up" if predicted > baseline else "down",
+        "reasons": reasons,
         "history": {
             "dates": [d.strftime("%Y-%m-%d") for d in history.index],
             "prices": [round(float(p), 2) for p in history],

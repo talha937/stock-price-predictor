@@ -394,6 +394,7 @@
     resultEl.hidden = false;
     placeMeter(data);
     drawChart(data.history);
+    if (window.explainResult) explainResult(data);
     resultEl.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
@@ -433,5 +434,6 @@
     })
   );
 </script>
+<script src="/static/explain.js"></script>
 </body>
 </html>
